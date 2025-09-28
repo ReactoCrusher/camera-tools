@@ -24,6 +24,10 @@ Keys:
 import cv2
 import numpy as np
 import time, math, argparse
+from picamera2 import Picamera2
+
+WIDTH = 2304
+HEIGHT = 1296
 
 # ---------- Focus measures ----------
 def focus_measures(gray):
@@ -72,7 +76,7 @@ def detect_slanted_lines(gray):
         for (x1,y1,x2,y2) in lines[:,0,:]:
             dx, dy = x2 - x1, y2 - y1
             length = float(math.hypot(dx, dy))
-            if length < min_len: 
+            if length < min_len:
                 continue
             ang = abs(math.degrees(math.atan2(dy, dx))) % 180.0
             if 10.0 <= ang <= 80.0 or 100.0 <= ang <= 170.0:
@@ -137,7 +141,7 @@ def mtf50_from_edge(gray, line, strip_half_width=20, oversample=8):
     nfft = int(2**(int(np.ceil(np.log2(len(lsfw)))) + 1))
     L = np.fft.rfft(lsfw, n=nfft)
     mtf = np.abs(L)
-    if mtf[0] <= 1e-12: 
+    if mtf[0] <= 1e-12:
         return None
     mtf /= mtf[0]
     freqs = np.fft.rfftfreq(nfft, d=1.0/os)  # cycles/pixel
@@ -161,7 +165,7 @@ def mtf50_from_edge(gray, line, strip_half_width=20, oversample=8):
 
 # ---------- Helpers ----------
 class EMA:
-    def __init__(self, alpha=0.2): 
+    def __init__(self, alpha=0.2):
         self.a = float(alpha); self.y = None
     def update(self, x):
         x = float(x)
@@ -183,7 +187,7 @@ class PeakHold:
         self.h = max(self.h, v)
         self.last_t = t
         return self.h
-    def reset(self): 
+    def reset(self):
         self.h = 0.0; self.last_t = None
 
 class Scale:
@@ -222,9 +226,6 @@ def put_kv(img, x, y, lines, step=18):
 # ---------- Main ----------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--device", type=int, default=0)
-    ap.add_argument("--width", type=int, default=0)
-    ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--roi_frac", type=float, default=0.33, help="ROI box as fraction of min(width,height)")
     ap.add_argument("--alpha", type=float, default=0.2, help="EMA alpha")
     ap.add_argument("--hf_cutoff", type=float, default=0.25)
@@ -235,24 +236,20 @@ def main():
     ap.add_argument("--peak_hl", type=float, default=0.0, help="Peak half-life seconds; 0 disables decay")
     args = ap.parse_args()
 
-    cap = cv2.VideoCapture(args.device)
-    if args.width>0: cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    if args.height>0: cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    # Try to lock AF/AE if supported
-    try: cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-    except Exception: pass
-    try:
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-    except Exception: pass
+    cam = Picamera2()
+    video_config = cam.create_video_configuration(
+        main={"size": (WIDTH, HEIGHT), "format": "RGB888"},
+        lores=None,
+        raw={"size": (WIDTH, HEIGHT)},
+        encode=None,
+    )
+    cam.configure(video_config)
+    cam.start(show_preview=False)
 
     # Warmup
-    for _ in range(8): cap.read()
+    for _ in range(8): cam.capture_array("main")
 
-    ok, frame = cap.read()
-    if not ok:
-        print("Camera read failed.")
-        return
+    frame = cam.capture_array("main")
     H, W = frame.shape[:2]
     r0 = int(min(W,H) * args.roi_frac * 0.5)
     cx, cy = W//2, H//2
@@ -271,11 +268,11 @@ def main():
     fcount = 0
     fps = 0.0
 
+    cv2.namedWindow("Focus HUD", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL)
+
     while True:
         t0 = time.time()
-        ok, frame = cap.read()
-        if not ok:
-            continue
+        frame = cam.capture_array("main")
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # ROI
@@ -408,7 +405,6 @@ def main():
         elif key == ord('?'):
             show_help = not show_help
 
-    cap.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
